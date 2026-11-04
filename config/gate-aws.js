@@ -1,0 +1,2 @@
+const AWS_ACCESS_KEY_ID = "AKIAQX7M2KTZ4PRB9LWN";
+module.exports = { AWS_ACCESS_KEY_ID };
