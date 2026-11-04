@@ -1,0 +1,8 @@
+{
+  "name": "signup-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node --test", "start": "node src/server.js" }
+}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>회원 가입</title>
+<style>
+  body { font-family: sans-serif; max-width: 24rem; margin: 2rem auto; padding: 0 1rem; }
+  .field { margin-bottom: 1rem; }
+  label { display: block; font-weight: bold; }
+  input { width: 100%; box-sizing: border-box; padding: .4rem; }
+  .error { color: #b00020; min-height: 1.2em; margin: .2rem 0 0; }
+  #status { margin-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>회원 가입</h1>
+<form id="f" novalidate>
+  <div class="field">
+    <label for="email">이메일</label>
+    <input id="email" name="email" type="email" autocomplete="email" required aria-describedby="email-error">
+    <p id="email-error" class="error" role="alert"></p>
+  </div>
+  <div class="field">
+    <label for="password">비밀번호 (8자 이상)</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" aria-describedby="password-error">
+    <p id="password-error" class="error" role="alert"></p>
+  </div>
+  <button type="submit" id="submit">가입</button>
+  <p id="status" role="status"></p>
+</form>
+</main>
+<script>
+const f = document.getElementById('f');
+const fields = ['email', 'password'];
+function setError(name, msg) {
+  const input = document.getElementById(name);
+  document.getElementById(name + '-error').textContent = msg || '';
+  if (msg) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
+}
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  fields.forEach((n) => setError(n, ''));
+  const status = document.getElementById('status');
+  status.textContent = '';
+  const btn = document.getElementById('submit');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: f.email.value, password: f.password.value })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) { status.textContent = '가입이 완료되었습니다.'; f.reset(); return; }
+    const details = Array.isArray(data.details) ? data.details : [];
+    let first = null;
+    details.forEach((d) => { if (fields.includes(d.field)) { setError(d.field, d.message); first = first || d.field; } });
+    if (first) document.getElementById(first).focus();
+    else status.textContent = data.message || '오류가 발생했습니다. 잠시 후 다시 시도하세요.';
+  } catch (err) {
+    status.textContent = '서버에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도하세요.';
+  } finally { btn.disabled = false; }
+});
+</script>
+</body>
+</html>
