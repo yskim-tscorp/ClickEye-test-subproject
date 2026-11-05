@@ -1,0 +1,1715 @@
+openapi: 3.0.3
+info:
+  title: 사내 도서 대여 서비스 API
+  version: 1.0.0
+  description: >-
+    사내 도서 대여 서비스 1차 오픈의 HTTP 인터페이스 명세다.
+    임직원은 회사 계정으로 로그인한 뒤 도서를 검색하고, 상세를 보고, 빌리고, 내 대여 현황을 보고, 반납한다.
+    로그인하면 서버가 8시간짜리 세션 쿠키(__Host-session)를 주고, 변경 요청(로그인·로그아웃·대여·반납)은
+    X-CSRF-Token 머리말을 함께 보내야 한다. 처리 순서는 명세 검증 → 세션 확인 → CSRF 확인이다(tech-spec 11.6).
+    남의 대여 현황이나 남의 대여 건에 접근하면 있든 없든 똑같이 403 FORBIDDEN 으로 답해 존재 여부를 알리지 않는다.
+    이 파일이 입력 검증 규칙, 오류 코드, 오류 문구의 정본이며, 서버 검증과 화면 검증이 모두 여기서 만들어진다.
+    개인정보(이름·부서·회사 메일)는 어떤 응답에도 담지 않는다.
+    /api 아래 없는 경로·틀린 메서드는 405 나 Allow 머리말 없이 11.1 형식의 404 ROUTE_NOT_FOUND 로 답한다.
+    예시 기준일(FixedClock 오늘)은 2028-03-02 이다. 대여·현황·반납 예시의 날짜는 모두 이 날을 기준으로 맞췄고,
+    같은 loanId 는 예시마다 같은 날짜를 가진다. 대여 예시(L1)와 현황·반납 예시(L2·L3)는 서로 다른 임직원의 장면이다.
+servers:
+  - url: /
+    description: 서비스 앞의 사내 프록시가 HTTPS 를 끝내고 같은 출처로 전달한다. 모든 /api 응답은 Cache-Control no-store 이다(표지 이미지만 예외).
+tags:
+  - name: 설정과 세션
+    description: 로그인 전 공개 정보, CSRF 토큰, 로그인·세션 확인·로그아웃
+  - name: 도서
+    description: 도서 검색, 상세, 표지
+  - name: 대여와 반납
+    description: 대여, 내 대여 현황, 반납
+  - name: 운영
+    description: 헬스 점검
+
+# 아래 x- 확장은 모두 문서 최상위(info 가 아님)에 둔다. 서버와 화면 빌드가 최상위에서만 읽는다(tech-spec 11.4).
+# x-page-size: 검색 결과 한 쪽의 건수. searchBooks 의 items 최대 건수와 같다.
+x-page-size: 20
+# x-search-truncate: 검색어를 정규화한 뒤 자르는 글자 수. q 의 명세 상한(maxLength 1000)과는 별개다.
+x-search-truncate: 100
+# x-error-messages: 오류 코드별 message 의 정본(tech-spec 11.3).
+#   예시/정본 문구의 <IT 지원 내선> 은 서버가 IT_SUPPORT_EXT 값으로 치환한 뒤 응답한다. 시험 설정값은 자리표시자 02-0000-0001 이다.
+#   UNAVAILABLE 은 연산마다 달라 x-unavailable-messages 에 있다. VALIDATION_FAILED 의 로그인 칸별 문구는 x-validation-messages 에 있다.
+x-error-messages:
+  OVERDUE_BLOCKED: "연체 중인 도서가 있어 새로 빌릴 수 없습니다. 내 대여 현황에서 연체 도서를 반납한 뒤 다시 빌려 주세요."
+  NO_COPY_AVAILABLE: "방금 모든 권이 대여 중이 되었습니다. 도서 상세나 검색 화면으로 돌아가 다른 도서를 찾아 주세요."
+  BOOK_NOT_FOUND: "도서를 찾을 수 없습니다"
+  FORBIDDEN: "접근할 수 없습니다"
+  ALREADY_RETURNED: "이미 반납된 도서입니다. 내 대여 현황을 다시 불러와 확인해 주세요."
+  REQUEST_ID_CONFLICT: "대여가 되지 않았습니다. 내 대여 현황에서 확인한 뒤 필요하면 다시 빌려 주세요."
+  UNAVAILABLE: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+  AUTH_FAILED: "계정 또는 비밀번호가 맞지 않습니다. 다시 입력해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+  AUTH_UNAVAILABLE: "회사 계정 확인을 하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+  VALIDATION_FAILED: "입력한 내용을 확인해 주세요."
+  SESSION_EXPIRED: "로그인 유지 시간이 지났거나 로그인하지 않았습니다. 다시 로그인해 주세요."
+  CSRF_REJECTED: "요청을 확인하지 못했습니다. 화면을 새로 고친 뒤 다시 시도해 주세요."
+  ROUTE_NOT_FOUND: "요청한 주소를 찾을 수 없습니다."
+# x-unavailable-messages: UNAVAILABLE(503, 예상 못한 오류는 500)의 operationId 별 message. 목록에 없는 연산은 default 를 쓴다.
+x-unavailable-messages:
+  searchBooks: "검색하지 못했습니다. 다시 검색해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+  getBook: "도서 정보를 불러오지 못했습니다. 다시 불러오거나 도서 검색으로 돌아가 주세요."
+  listEmployeeLoans: "대여 현황을 불러오지 못했습니다. 다시 불러와 주세요."
+  borrowBook: "대여가 되지 않았거나 결과를 확인하지 못했습니다. 내 대여 현황에서 확인한 뒤 필요하면 다시 빌려 주세요."
+  returnLoan: "반납이 되지 않았거나 결과를 확인하지 못했습니다. 내 대여 현황을 다시 불러와 확인한 뒤 필요하면 다시 반납해 주세요."
+  default: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+# x-validation-messages: 화면이 details[].field/rule 로 칸 아래에 보이는 문구(로그인 두 칸).
+#   required·minLength·pattern 은 모두 빈 칸으로 본다: 서버/Ajv 가 칸이 빈 경우에 내는 rule 이 누락=required, 빈 문자열=minLength,
+#   공백만(account 만)=pattern 으로 갈리지만 사용자에게는 같은 칸 문구를 보인다. maxLength 는 칸별 길이 안내 문구이다.
+#   타입 오류(예 account 에 숫자)는 rule type 으로 나오며 빈 칸 문구와 별개로 칸별 일반 입력 안내 「입력한 내용을 확인해 주세요」를 보인다.
+#   (field, rule) 의 모든 조합에 문구가 있다. 이 밖의 rule(additionalProperties 등)은 칸 문구 없이 최상위 message 만 보인다.
+x-validation-messages:
+  login:
+    account:
+      required: "회사 계정을 입력해 주세요"
+      minLength: "회사 계정을 입력해 주세요"
+      pattern: "회사 계정을 입력해 주세요"
+      maxLength: "회사 계정은 254자 이내로 입력해 주세요"
+      type: "입력한 내용을 확인해 주세요"
+    password:
+      required: "비밀번호를 입력해 주세요"
+      minLength: "비밀번호를 입력해 주세요"
+      maxLength: "비밀번호는 1024자 이내로 입력해 주세요"
+      type: "입력한 내용을 확인해 주세요"
+
+security:
+  - sessionCookie: []
+
+paths:
+  /api/public-config:
+    get:
+      operationId: getPublicConfig
+      tags: [설정과 세션]
+      summary: 로그인 화면에 보일 공개 설정을 가져온다
+      description: >-
+        로그인 화면(SCR-01)이 열릴 때 로그인 전에 부른다. 지금은 IT 지원 내선 하나만 돌려준다.
+        세션도 CSRF 토큰도 필요 없다. 값은 환경변수 IT_SUPPORT_EXT 에서 온다.
+      security: []
+      x-screens: [SCR-01]
+      responses:
+        "200":
+          description: 공개 설정
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicConfig"
+              examples:
+                default:
+                  summary: IT 지원 내선(자리표시자)
+                  value:
+                    itSupportExt: "<IT 지원 내선>"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            원인은 서비스 내부 오류이다. 로그인 화면은 IT 지원 안내 문구 자리에 값을 비워 둔 채 이어 쓸 수 있으며,
+            사용자는 잠시 뒤 화면을 새로 고친다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/csrf:
+    get:
+      operationId: getCsrfToken
+      tags: [설정과 세션]
+      summary: CSRF 토큰을 받는다
+      description: >-
+        로그인 화면(SCR-01)이 열릴 때와 변경 요청이 CSRF_REJECTED 로 거절된 뒤 부른다.
+        서버가 비밀 값을 __Host-csrf 쿠키(HttpOnly, Secure, SameSite=Strict)로 심고, 같은 비밀에서 만든 토큰을 응답으로 준다.
+        화면은 이후 모든 변경 요청에 이 토큰을 X-CSRF-Token 머리말로 되돌려 보낸다(이중 제출).
+        세션은 필요 없다. 로그인 성공 때 CSRF 비밀 값도 새로 발급되므로 로그인 직후에 다시 받는다.
+      security: []
+      x-screens: [SCR-01]
+      responses:
+        "200":
+          description: CSRF 토큰. 응답 머리말에 __Host-csrf 쿠키가 심긴다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            Set-Cookie:
+              description: "__Host-csrf=<비밀 값>; HttpOnly; Secure; SameSite=Strict; Path=/ (도메인 속성 없음)"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsrfTokenResponse"
+              examples:
+                default:
+                  value:
+                    csrfToken: "<CSRF_TOKEN>"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            원인은 서비스 내부 오류이다. 사용자는 화면을 새로 고쳐 다시 시도한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/session:
+    post:
+      operationId: login
+      tags: [설정과 세션]
+      summary: 회사 계정으로 로그인한다
+      description: >-
+        로그인 화면(SCR-01)에서 「로그인」을 누를 때 부른다. 세션은 필요 없다(security 가 빈 목록).
+        단, 로그인 CSRF 를 막기 위해 getCsrfToken 으로 받은 토큰을 X-CSRF-Token 머리말로 보내야 하고 Origin 도 허용된 출처여야 한다.
+        서버가 회사 계정 시스템에 계정·비밀번호를 확인하고(최대 10초), 성공하면 새 세션 식별자를 __Host-session 쿠키
+        (HttpOnly, Secure, SameSite=Strict, Path=/, 8시간 절대 만료)로 발급한다. 같은 요청에 이전 세션이 실려 있으면 지운다.
+        성공 시 CSRF 비밀 값도 새로 발급하므로 화면은 getCsrfToken 을 다시 부른다.
+        비밀번호는 저장하지도 로그에 남기지도 않으며 응답에도 되돌려 보내지 않는다.
+        본문에 account, password 외의 필드가 있으면 거부한다.
+        동시 확인 호출 상한(10건)이 차면 새 로그인이 503 UNAVAILABLE 이다. 출처별 속도 제한은 서비스에 두지 않는다(요구사항 A-19, tech-spec A-14).
+        비밀번호는 공백도 글자이므로 공백만 있는 비밀번호는 유효하다(거절하지 않는다). 계정 칸만 공백만 있으면 거절한다.
+        칸이 빈 경우 rule 은 누락=required, 빈 문자열=minLength, 공백만(account 만)=pattern 이고, 화면은 셋을 모두 빈 칸으로 보아 같은 문구를 보인다
+        (x-validation-messages.login).
+      security: []
+      x-screens: [SCR-01]
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            examples:
+              default:
+                summary: 회사 계정(메일 형식)과 비밀번호 자리표시자
+                value:
+                  account: "user1@example.com"
+                  password: "<PASSWORD>"
+      responses:
+        "200":
+          description: 로그인 성공. 세션 쿠키가 발급된다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            Set-Cookie:
+              description: "__Host-session=<세션 값>; HttpOnly; Secure; SameSite=Strict; Path=/ (도메인 속성 없음, 값은 서버가 만든 무작위 값)"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+              examples:
+                default:
+                  value:
+                    employeeId: "0b6f1c2e-5d3a-4e8b-9a47-2c1d8e7f6a50"
+        "400":
+          description: >-
+            VALIDATION_FAILED. 원인은 account 또는 password 가 없음(required), 빈 문자열(minLength), account 가 공백만(pattern),
+            길이 초과(maxLength: account 254자, password 1024자), 본문에 알 수 없는 필드가 있음, 본문이 JSON 이 아님, 본문 한도 초과이다.
+            본문 한도 초과(프록시 nginx 의 413 은 400 VALIDATION_FAILED 로 바꿔 답한다)도 같은 400 이다.
+            본문이 JSON 으로 읽히지 않으면 details 는 [{"field":"(body)","rule":"type"}], 본문 한도 초과면 [{"field":"(body)","rule":"maxLength"}] 이다.
+            공백만 있는 password 는 오류가 아니다.
+            details 의 field 와 rule 로 어느 칸이 왜 틀렸는지 알려 주며 보낸 값은 담지 않는다.
+            사용자는 해당 칸 아래 문구를 보고 고쳐 다시 누른다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                emptyAccount:
+                  summary: 회사 계정이 빈 문자열("")
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: account
+                        rule: minLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                blankAccount:
+                  summary: 회사 계정이 공백만("   ")
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: account
+                        rule: pattern
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                missingAccount:
+                  summary: 회사 계정 필드가 본문에 없음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: account
+                        rule: required
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                emptyPassword:
+                  summary: 비밀번호가 빈 문자열("")
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: password
+                        rule: minLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                missingPassword:
+                  summary: 비밀번호 필드가 본문에 없음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: password
+                        rule: required
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                tooLongAccount:
+                  summary: 회사 계정이 254자를 넘음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: account
+                        rule: maxLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                unknownField:
+                  summary: 본문에 알 수 없는 필드가 있음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: "(body)"
+                        rule: additionalProperties
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                tooLongPassword:
+                  summary: 비밀번호가 1024자를 넘음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: password
+                        rule: maxLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                unparsableBody:
+                  summary: 본문이 JSON 으로 읽히지 않음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: "(body)"
+                        rule: type
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                bodyTooLarge:
+                  summary: 본문 한도 초과(nginx 413 을 400 으로 바꿈)
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: "(body)"
+                        rule: maxLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "401":
+          description: >-
+            AUTH_FAILED. 원인은 회사 계정 시스템이 계정 또는 비밀번호를 거절한 것이다. 어느 쪽이 틀렸는지는 알리지 않는다.
+            사용자는 비밀번호를 비운 채 다시 입력하고, 계속되면 IT 지원에 문의한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                authFailed:
+                  value:
+                    code: AUTH_FAILED
+                    message: "계정 또는 비밀번호가 맞지 않습니다. 다시 입력해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "403":
+          $ref: "#/components/responses/CsrfRejected"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 서비스 저장소 오류·시간 초과, 또는 회사 계정 동시 확인 호출이 상한(10건)에 닿아 기다리지 않고 거절한 것이다.
+            이미 로그인한 사용자에게는 영향이 없다. 사용자는 잠시 뒤 다시 시도하고 계속되면 IT 지원에 문의한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "504":
+          description: >-
+            AUTH_UNAVAILABLE. 원인은 회사 계정 시스템이 10초 안에 답하지 않음·연결 실패·응답 형식 이상, 또는 회사 메일을 받지 못해 로그인을 허용할 수 없는 것이다.
+            사용자는 잠시 뒤 다시 시도하고 계속되면 IT 지원에 문의한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                authUnavailable:
+                  value:
+                    code: AUTH_UNAVAILABLE
+                    message: "회사 계정 확인을 하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    get:
+      operationId: getSession
+      tags: [설정과 세션]
+      summary: 지금 로그인한 임직원의 id 를 확인한다
+      description: >-
+        로그인 이후 모든 화면이 열릴 때 부른다. 화면은 돌려받은 employeeId 로 「내 대여 현황」 주소를 만든다.
+        세션 쿠키가 필요하다. 쿠키가 없거나 서버에서 만료·삭제된 세션이면 401 SESSION_EXPIRED 이고 화면은 로그인 화면으로 보낸다.
+        CSRF 토큰은 필요 없다(변경 요청이 아님).
+      x-screens: [SCR-02, SCR-03, SCR-04, SCR-05, SCR-06, SCR-08]
+      responses:
+        "200":
+          description: 로그인된 임직원
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+              examples:
+                default:
+                  value:
+                    employeeId: "0b6f1c2e-5d3a-4e8b-9a47-2c1d8e7f6a50"
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 세션을 확인할 저장소 오류·시간 초과이다. 사용자는 다시 시도하고 계속되면 IT 지원에 문의한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    delete:
+      operationId: logout
+      tags: [설정과 세션]
+      summary: 로그아웃한다
+      description: >-
+        상단 바의 「로그아웃」을 누를 때 부른다. 세션 쿠키와 X-CSRF-Token 머리말이 모두 필요하다.
+        서버가 세션 행을 지우고 세션 쿠키를 만료시킨다. 성공하면 화면은 로그인 화면으로 간다.
+      x-screens: [SCR-02, SCR-03, SCR-04, SCR-06, SCR-08]
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: 로그아웃됨. 본문은 비어 있고 세션 쿠키가 지워진다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            Set-Cookie:
+              description: "__Host-session=; Max-Age=0; HttpOnly; Secure; SameSite=Strict; Path=/ (쿠키 삭제)"
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "403":
+          $ref: "#/components/responses/CsrfRejected"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 세션을 지울 저장소 오류·시간 초과이다. 로그아웃이 끝났는지 알 수 없으므로 사용자는 다시 시도한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/books:
+    get:
+      operationId: searchBooks
+      tags: [도서]
+      summary: 제목·저자로 도서를 검색한다
+      description: >-
+        도서 검색 화면(SCR-02)이 열릴 때와 「검색」「다음」을 누를 때 부른다. 세션이 필요하다. CSRF 토큰은 필요 없다.
+        q 는 제목 또는 저자에 들어 있는 글자이다. 화면은 보내기 전에 공유 정규화 함수(앞뒤 공백 무시·공백 모두 제거·소문자·x-search-truncate 글자에서 자르기)를 적용한다.
+        서버가 q 를 받으면 같은 정규화를 한 번 더 적용하므로, q 의 명세 상한은 1000자이고 그것을 넘을 때만 400 이다.
+        q 가 비어 있거나 없으면 전체 도서이다.
+        정렬은 제목 오름차순(문자 코드 순)이고 같으면 도서 id 순이다. 한 쪽은 x-page-size(20)건이고 다음 쪽이 있으면 hasNext 가 true 이다.
+        결과 범위를 넘는 page 는 빈 items 와 hasNext false 로 답한다. 알 수 없는 쿼리 매개변수는 거부한다.
+        availableCount 는 저장하지 않고 열린 대여 건이 없는 권 수를 읽을 때 계산한 값이다.
+      x-screens: [SCR-02]
+      parameters:
+        - $ref: "#/components/parameters/QueryQ"
+        - $ref: "#/components/parameters/QueryPage"
+      responses:
+        "200":
+          description: 검색 결과 한 쪽
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookSearchPage"
+              examples:
+                default:
+                  summary: 시험 도서 둘
+                  value:
+                    items:
+                      - bookId: "101"
+                        title: "시험 도서 A"
+                        author: "저자 A"
+                        hasCover: true
+                        availableCount: 1
+                      - bookId: "102"
+                        title: "시험 도서 B"
+                        author: "저자 B"
+                        hasCover: false
+                        availableCount: 0
+                    hasNext: false
+                empty:
+                  summary: 결과 없음
+                  value:
+                    items: []
+                    hasNext: false
+                lastPageEmpty:
+                  summary: 범위를 넘는 쪽(page=10000)은 오류가 아니라 빈 items
+                  value:
+                    items: []
+                    hasNext: false
+                maxTitle:
+                  summary: 제목이 최대 길이(300자)인 도서(자리표시자 제목)
+                  value:
+                    items:
+                      - bookId: "103"
+                        title: "시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목"
+                        author: "저자 C"
+                        hasCover: false
+                        availableCount: 1
+                    hasNext: false
+        "400":
+          description: >-
+            VALIDATION_FAILED. 원인은 q 가 1000자를 넘음(maxLength), page 가 1~10000 범위를 벗어남(minimum·maximum), page 가 정수가 아님(type),
+            알 수 없는 쿼리 매개변수(additionalProperties, field 는 고정 표지 (query))이다.
+            사용자는 검색어를 줄이거나 고쳐 다시 검색한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badPage:
+                  summary: page 가 10000 을 넘음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: page
+                        rule: maximum
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                pageNotInteger:
+                  summary: page 가 정수가 아님(예 "abc", "1.5")
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: page
+                        rule: type
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                pageZero:
+                  summary: page 가 0
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: page
+                        rule: minimum
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                tooLongQuery:
+                  summary: q 가 1000자를 넘음
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: q
+                        rule: maxLength
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                unknownQuery:
+                  summary: 알 수 없는 쿼리 매개변수(보낸 키 이름은 담지 않는다)
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: "(query)"
+                        rule: additionalProperties
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·시간 초과이다. 화면은 결과 목록 자리에 안내와 「다시 검색」을 보인다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "검색하지 못했습니다. 다시 검색해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/books/{bookId}:
+    get:
+      operationId: getBook
+      tags: [도서]
+      summary: 도서 상세와 권별 상태를 가져온다
+      description: >-
+        도서 상세 화면(SCR-03)이 열릴 때와 「다시 불러오기」를 누를 때 부른다. 세션이 필요하다. CSRF 토큰은 필요 없다.
+        도서 정보, 권별 대여 가능 여부(copyNo 오름차순), 그리고 요청한 임직원 본인에게 연체 중인 대여 건이 있는지(hasOverdue)를 함께 돌려준다.
+        hasOverdue 는 「대여」 버튼을 화면을 연 시점부터 비활성으로 보일지 정하는 데 쓴다. 다만 대여 때 서버가 다시 확인하므로 최종 판정은 borrowBook 이 한다.
+        bookId 가 형식에 맞지 않거나 9223372036854775807 을 넘어도, 없는 도서와 같이 404 BOOK_NOT_FOUND 이다(400 이 아님). 세션 확인이 먼저다.
+      x-screens: [SCR-03, SCR-06]
+      parameters:
+        - $ref: "#/components/parameters/BookId"
+      responses:
+        "200":
+          description: 도서 상세
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookDetail"
+              examples:
+                default:
+                  value:
+                    bookId: "101"
+                    title: "시험 도서 A"
+                    author: "저자 A"
+                    hasCover: true
+                    availableCount: 1
+                    publisher: "시험 출판사"
+                    description: "시험용 소개 글이다."
+                    copies:
+                      - copyNo: 1
+                        available: true
+                      - copyNo: 2
+                        available: false
+                    hasOverdue: false
+                noPublisher:
+                  summary: 출판사·소개가 없는 도서
+                  value:
+                    bookId: "102"
+                    title: "시험 도서 B"
+                    author: "저자 B"
+                    hasCover: false
+                    availableCount: 0
+                    publisher: null
+                    description: null
+                    copies:
+                      - copyNo: 1
+                        available: false
+                    hasOverdue: true
+                singleCopy:
+                  summary: 권이 하나뿐이고 대여 가능한 도서(copies 는 최소 1개)
+                  value:
+                    bookId: "104"
+                    title: "시험 도서 D"
+                    author: "저자 D"
+                    hasCover: false
+                    availableCount: 1
+                    publisher: "시험 출판사"
+                    description: null
+                    copies:
+                      - copyNo: 1
+                        available: true
+                    hasOverdue: false
+                maxTitle:
+                  summary: 제목이 최대 길이(300자)인 도서(자리표시자 제목)
+                  value:
+                    bookId: "103"
+                    title: "시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목시험제목"
+                    author: "저자 C"
+                    hasCover: false
+                    availableCount: 1
+                    publisher: null
+                    description: null
+                    copies:
+                      - copyNo: 1
+                        available: true
+                    hasOverdue: false
+                maxId:
+                  summary: 최대 id(9223372036854775807)도 형식에 맞아 200 이 될 수 있다. +1 은 404 BOOK_NOT_FOUND
+                  value:
+                    bookId: "9223372036854775807"
+                    title: "시험 도서 E"
+                    author: "저자 E"
+                    hasCover: false
+                    availableCount: 1
+                    publisher: null
+                    description: null
+                    copies:
+                      - copyNo: 1
+                        available: true
+                    hasOverdue: false
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "404":
+          $ref: "#/components/responses/BookNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·시간 초과이다. 화면은 도서 정보 자리에 안내와 「다시 불러오기」「도서 검색으로 돌아가기」를 보인다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "도서 정보를 불러오지 못했습니다. 다시 불러오거나 도서 검색으로 돌아가 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/books/{bookId}/cover:
+    get:
+      operationId: getBookCover
+      tags: [도서]
+      summary: 도서 표지 이미지를 가져온다
+      description: >-
+        검색 결과 줄(SCR-02)과 도서 상세(SCR-03)가 표지를 그릴 때, 목록·상세의 hasCover 가 true 인 도서에 대해서만 부른다.
+        세션이 필요하다. CSRF 토큰은 필요 없다. 응답은 png·jpeg·webp 파일이며 확장자로 형식을 정한다.
+        표지 파일이 없거나 표지 이름이 비어 있으면(tech-spec 의 openCover 가 null) 이미지 대신 404 BOOK_NOT_FOUND 를 돌려준다.
+        화면은 hasCover 가 false 인 도서에는 이 요청을 보내지 않고 회색 자리 상자를 보이며, 이 요청이 404 를 받아도 같은 회색 상자를 보인다(SCR-06 으로 이동하지 않는다).
+        표지가 브라우저에서 직접 열려도 스크립트가 돌지 않도록 보안 머리말을 붙인다.
+        bookId 형식 오류는 getBook 과 같이 404 BOOK_NOT_FOUND 이다.
+      x-screens: [SCR-02, SCR-03]
+      parameters:
+        - $ref: "#/components/parameters/BookId"
+      responses:
+        "200":
+          description: 표지 이미지 파일
+          headers:
+            Cache-Control:
+              description: >-
+                표지는 사용자별 세션이 필요하므로 공유 캐시를 쓰지 않고 브라우저에만 하루 둔다.
+                표지는 민감하지 않은 정보라서 /api 응답 중 이 200 만 no-store 대신 이 값을 허용한다.
+              schema:
+                type: string
+                enum: ["private, max-age=86400"]
+            X-Content-Type-Options:
+              schema:
+                type: string
+                enum: ["nosniff"]
+            Content-Disposition:
+              schema:
+                type: string
+                enum: ["inline"]
+            Content-Security-Policy:
+              description: 표지 파일이 직접 열려도 스크립트가 돌지 않게 한다.
+              schema:
+                type: string
+                enum: ["sandbox"]
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "404":
+          description: >-
+            BOOK_NOT_FOUND. 원인은 도서가 없거나 bookId 형식이 틀렸거나, 그 도서에 표지 파일이 없는 것이다.
+            사용자가 할 일은 없다. 화면은 이 응답을 받으면 표지 자리에 회색 상자를 그대로 보인다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                noCover:
+                  summary: 표지가 없는 도서
+                  value:
+                    code: BOOK_NOT_FOUND
+                    message: "도서를 찾을 수 없습니다"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·표지 파일 읽기 실패이다. 화면은 회색 자리 상자를 보이고 사용자가 할 일은 없다(화면을 새로 고치면 다시 시도한다).
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/books/{bookId}/loans:
+    post:
+      operationId: borrowBook
+      tags: [대여와 반납]
+      summary: 도서 한 권을 빌린다
+      description: >-
+        도서 상세 화면(SCR-03)에서 「대여」를 누를 때 부른다. 세션 쿠키와 X-CSRF-Token 머리말이 모두 필요하다.
+        대여할 임직원은 세션이 가리키는 본인이다(본문에 임직원 id 를 보내지 않는다).
+        서버가 대여 가능한 권 하나를 골라 즉시 대여하고 반납 예정일은 오늘(한국 표준시) + 14일이다. 연체 중이거나 대여 가능한 권이 없으면 거절하고 저장하지 않는다.
+        requestId 는 화면이 「대여」를 누를 때 만든 UUID 이다. 같은 임직원이 같은 requestId 로 같은 도서를 다시 보내면(응답 유실 뒤 재시도)
+        새로 만들지 않고 첫 결과를 replayed true 와 함께 200 으로 돌려준다. 새 대여는 201 이다.
+        requestId 는 임직원별로 따진다. 다른 임직원이 쓴 값은 없는 것과 같다.
+        같은 requestId 로 다른 도서를 요청하면 409 REQUEST_ID_CONFLICT 이다.
+        예시는 기준일 2028-03-02(FixedClock 오늘)에 빌린 장면이라 반납 예정일이 2028-03-16 이고 loanId 는 L1 이다.
+        본문에 requestId 외의 필드가 있으면 거부한다. bookId 형식 오류는 404 BOOK_NOT_FOUND 이다.
+      x-screens: [SCR-03]
+      parameters:
+        - $ref: "#/components/parameters/BookId"
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BorrowRequest"
+            examples:
+              default:
+                value:
+                  requestId: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+      responses:
+        "200":
+          description: 같은 requestId 의 재전송. 첫 번째 결과를 그대로 돌려준다(replayed true).
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BorrowResult"
+              examples:
+                replayed:
+                  value:
+                    loanId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    bookTitle: "시험 도서 A"
+                    dueOn: "2028-03-16"
+                    replayed: true
+        "201":
+          description: 새 대여가 생겼다(replayed false).
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BorrowResult"
+              examples:
+                created:
+                  value:
+                    loanId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+                    bookTitle: "시험 도서 A"
+                    dueOn: "2028-03-16"
+                    replayed: false
+        "400":
+          description: >-
+            VALIDATION_FAILED. 원인은 requestId 가 없거나 UUID 가 아님, 본문에 알 수 없는 필드가 있음, 본문이 JSON 이 아님, 본문 한도 초과이다.
+            본문 한도 초과(프록시 nginx 의 413 은 400 VALIDATION_FAILED 로 바꿔 답한다)도 같은 400 이다.
+            본문이 JSON 으로 읽히지 않으면 details 는 [{"field":"(body)","rule":"type"}], 본문 한도 초과면 [{"field":"(body)","rule":"maxLength"}] 이다.
+            화면이 정상이면 나지 않는다. 사용자는 화면을 새로 고쳐 다시 시도한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                badRequestId:
+                  value:
+                    code: VALIDATION_FAILED
+                    message: "입력한 내용을 확인해 주세요."
+                    details:
+                      - field: requestId
+                        rule: format
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "403":
+          $ref: "#/components/responses/CsrfRejected"
+        "404":
+          $ref: "#/components/responses/BookNotFound"
+        "409":
+          description: >-
+            현재 상태와 충돌해 대여하지 않았다(저장하지 않음). 코드는 세 가지이다.
+            OVERDUE_BLOCKED 는 본인에게 연체 중인 대여 건이 있는 것이고 사용자는 내 대여 현황에서 연체 도서를 반납한 뒤 다시 빌린다.
+            NO_COPY_AVAILABLE 은 대여 가능한 권이 없는 것(마지막 권을 다른 사람이 먼저 빌린 경우 포함)이고 사용자는 다른 도서를 찾는다.
+            REQUEST_ID_CONFLICT 는 같은 요청 식별자로 다른 도서를 요청한 것이고 사용자는 내 대여 현황에서 확인한 뒤 필요하면 다시 빌린다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                overdue:
+                  value:
+                    code: OVERDUE_BLOCKED
+                    message: "연체 중인 도서가 있어 새로 빌릴 수 없습니다. 내 대여 현황에서 연체 도서를 반납한 뒤 다시 빌려 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                noCopy:
+                  value:
+                    code: NO_COPY_AVAILABLE
+                    message: "방금 모든 권이 대여 중이 되었습니다. 도서 상세나 검색 화면으로 돌아가 다른 도서를 찾아 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                requestIdConflict:
+                  value:
+                    code: REQUEST_ID_CONFLICT
+                    message: "대여가 되지 않았습니다. 내 대여 현황에서 확인한 뒤 필요하면 다시 빌려 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·시간 초과이며 트랜잭션은 전부 되돌려졌다. 응답이 끊겨 결과를 모를 수도 있으므로
+            사용자는 내 대여 현황에서 확인한 뒤 필요하면 다시 빌린다(같은 requestId 로 다시 보내면 중복되지 않는다).
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "대여가 되지 않았거나 결과를 확인하지 못했습니다. 내 대여 현황에서 확인한 뒤 필요하면 다시 빌려 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/employees/{employeeId}/loans:
+    get:
+      operationId: listEmployeeLoans
+      tags: [대여와 반납]
+      summary: 내 대여 현황(아직 반납하지 않은 대여 건)을 가져온다
+      description: >-
+        내 대여 현황 화면(SCR-04)이 열릴 때와 「다시 불러오기」「현황 다시 불러오기」를 누를 때 부른다. 세션이 필요하다. CSRF 토큰은 필요 없다.
+        경로의 employeeId 가 세션의 임직원과 다르면 그 임직원이 있든 없든 똑같이 403 FORBIDDEN 으로 답해 존재 여부를 알리지 않는다.
+        employeeId 가 UUID 형식이 아니어도 400 이 아니라 403 FORBIDDEN 이다. 세션 확인이 먼저다.
+        열린 대여 건만 돌려주며 반납 예정일 오름차순, 같으면 먼저 빌린 순이다. overdue 는 반납 예정일이 오늘(한국 표준시)보다 앞선 건이고
+        예정일 당일은 연체가 아니다. hasOverdue 는 items 중 연체가 하나라도 있는지이다.
+      x-screens: [SCR-04, SCR-08]
+      parameters:
+        - $ref: "#/components/parameters/EmployeeId"
+      responses:
+        "200":
+          description: 내 대여 현황
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyLoansResult"
+              examples:
+                default:
+                  summary: 기준일 2028-03-02 에 연체 건(L2)과 예정일 당일 건(L3)이 있음
+                  value:
+                    items:
+                      - loanId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+                        bookTitle: "시험 도서 A"
+                        dueOn: "2028-03-01"
+                        overdue: true
+                      - loanId: "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
+                        bookTitle: "시험 도서 B"
+                        dueOn: "2028-03-02"
+                        overdue: false
+                    hasOverdue: true
+                empty:
+                  summary: 빌린 도서가 없음
+                  value:
+                    items: []
+                    hasOverdue: false
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·시간 초과이다. 화면은 목록 자리에 안내와 「다시 불러오기」를 보이고 빈 목록 문구를 대신 보이지 않는다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "대여 현황을 불러오지 못했습니다. 다시 불러와 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /api/loans/{loanId}/return:
+    post:
+      operationId: returnLoan
+      tags: [대여와 반납]
+      summary: 빌린 도서 한 건을 반납한다
+      description: >-
+        반납 확인 대화상자(SCR-05)에서 「반납하기」를 확정할 때 부른다(SCR-04 에서 시작). 세션 쿠키와 X-CSRF-Token 머리말이 모두 필요하다. 요청 본문은 없다.
+        소유권: 세션의 임직원이 빌린 건만 반납할 수 있다. 남의 건이든 없는 건이든 똑같이 403 FORBIDDEN 으로 답해 존재 여부를 알리지 않는다.
+        loanId 가 UUID 형식이 아니어도 400 이 아니라 403 FORBIDDEN 이다. 세션 확인이 먼저다.
+        연체 중이어도 반납할 수 있다. 내 건인데 이미 반납됐으면 409 ALREADY_RETURNED 이고 중복 처리하지 않는다.
+        returnedOn 은 오늘(한국 표준시) 날짜이다.
+      x-screens: [SCR-04, SCR-05, SCR-08]
+      parameters:
+        - $ref: "#/components/parameters/LoanId"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: 반납됨
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnResult"
+              examples:
+                default:
+                  summary: 기준일 2028-03-02 에 연체 건 L2(예정일 2028-03-01)를 반납
+                  value:
+                    loanId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+                    returnedOn: "2028-03-02"
+        "401":
+          $ref: "#/components/responses/SessionExpired"
+        "403":
+          description: >-
+            두 가지 중 하나이다. FORBIDDEN 은 남의 대여 건이거나 없는 대여 건이거나 loanId 형식이 틀린 것이고(존재를 알리지 않는다)
+            사용자는 접근할 수 없음 화면에서 도서 검색으로 돌아간다.
+            CSRF_REJECTED 는 X-CSRF-Token 머리말이 없거나 쿠키·Origin 과 맞지 않는 것이고(세션 확인 뒤에 검사한다) 사용자는 화면을 새로 고친 뒤 다시 시도한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                forbidden:
+                  value:
+                    code: FORBIDDEN
+                    message: "접근할 수 없습니다"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+                csrfRejected:
+                  value:
+                    code: CSRF_REJECTED
+                    message: "요청을 확인하지 못했습니다. 화면을 새로 고친 뒤 다시 시도해 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "409":
+          description: >-
+            ALREADY_RETURNED. 원인은 내 건인데 이미 반납된 것이다. 사용자는 내 대여 현황을 다시 불러와 확인한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                alreadyReturned:
+                  value:
+                    code: ALREADY_RETURNED
+                    message: "이미 반납된 도서입니다. 내 대여 현황을 다시 불러와 확인해 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 저장소 오류·시간 초과이다. 반납이 됐는지 모를 수 있으므로 사용자는 내 대여 현황을 다시 불러와 확인한 뒤 필요하면 다시 반납한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "반납이 되지 않았거나 결과를 확인하지 못했습니다. 내 대여 현황을 다시 불러와 확인한 뒤 필요하면 다시 반납해 주세요."
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [운영]
+      summary: 서비스가 살아 있고 DB 에 닿는지 점검한다
+      description: >-
+        운영 점검(프록시·감시 도구)이 주기적으로 부른다. 화면은 쓰지 않는다. 세션도 CSRF 도 필요 없다.
+        프로세스와 SELECT 1 성공만 보며 인증 정보나 상세 정보는 돌려주지 않는다. /api 아래가 아니므로 200 에는 Cache-Control no-store 를 붙이지 않아도 되지만, 503 은 공통 오류 응답이라 no-store 가 붙는다(허용).
+      security: []
+      x-screens: []
+      x-screens-reason: 운영 점검용이라 사용자 화면이 쓰지 않는다(tech-spec 3.3 의 화면 열 「없음(운영)」).
+      responses:
+        "200":
+          description: 정상
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+              examples:
+                default:
+                  value:
+                    status: ok
+        "503":
+          description: >-
+            UNAVAILABLE. 원인은 DB 에 닿지 못함이다. 운영자가 서비스와 DB 상태를 확인한다.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            X-Request-Id:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                unavailable:
+                  value:
+                    code: UNAVAILABLE
+                    message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                    details: []
+                    trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-session
+      description: >-
+        로그인 성공 때 서버가 발급하는 세션 쿠키(HttpOnly, Secure, SameSite=Strict, Path=/, 도메인 속성 없음, 8시간 절대 만료·활동으로 늘리지 않음).
+        비밀 값은 URL 에 두지 않는다. 쿠키가 없거나 서버에서 만료·삭제됐으면 401 SESSION_EXPIRED 이다.
+  headers:
+    CacheControlNoStore:
+      description: >-
+        /api 응답은 개인별 내용이 있어 저장하지 않게 no-store 를 붙인다(오류 응답 포함).
+        예외는 getBookCover 의 200 하나뿐이다.
+      schema:
+        type: string
+        enum: ["no-store"]
+    XRequestId:
+      description: 요청 id. 오류 본문의 trace_id 와 같다. 프록시가 준 값이 32자리 16진수일 때만 믿고 아니면 서버가 만든다.
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{32}$"
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: >-
+        getCsrfToken 이 준 토큰. 변경 요청(login, logout, borrowBook, returnLoan)마다 되돌려 보낸다.
+        명세 검증에서는 필수가 아니다(required false). 머리말이 없는 경우도 명세 검증이 아니라 CSRF 확인 단계가 검사한다.
+        처리 순서는 명세 검증 → 세션 확인 → CSRF 확인(tech-spec 11.6)이므로, 머리말이 없거나 __Host-csrf 쿠키·Origin 과 맞지 않으면
+        세션 확인 뒤에 403 CSRF_REJECTED 이다(400 이 아니다).
+        길이·형식도 명세 검증이 아니라 CSRF 확인 단계가 검사하므로 빈 값이나 긴 값도 세션 확인 뒤 403 CSRF_REJECTED 이다.
+      schema:
+        type: string
+    BookId:
+      name: bookId
+      in: path
+      required: true
+      description: >-
+        도서 id. 1 이상 9223372036854775807 이하의 양의 정수를 글자로 쓴 것이고 앞에 0 이 없다.
+        형식이나 범위가 맞지 않으면 400 이 아니라 404 BOOK_NOT_FOUND 이다(존재하지 않는 id 와 구분하지 않는다).
+      x-invalid-id-error: BOOK_NOT_FOUND
+      x-max-value: "9223372036854775807"
+      schema:
+        $ref: "#/components/schemas/BookIdValue"
+    EmployeeId:
+      name: employeeId
+      in: path
+      required: true
+      description: >-
+        임직원 id(UUID). 세션의 임직원과 같아야 한다. 형식이 틀려도 400 이 아니라 403 FORBIDDEN 이다.
+      x-invalid-id-error: FORBIDDEN
+      schema:
+        type: string
+        format: uuid
+        example: "0b6f1c2e-5d3a-4e8b-9a47-2c1d8e7f6a50"
+    LoanId:
+      name: loanId
+      in: path
+      required: true
+      description: >-
+        대여 건 id(UUID). 형식이 틀려도 400 이 아니라 403 FORBIDDEN 이다.
+      x-invalid-id-error: FORBIDDEN
+      schema:
+        type: string
+        format: uuid
+        example: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+    QueryQ:
+      name: q
+      in: query
+      required: false
+      description: >-
+        검색어. 제목 또는 저자에 들어 있는 글자이다. 없거나 비면 전체 도서. 명세 상한은 1000자이며,
+        그 안의 값은 서버가 정규화(공백 모두 제거·소문자)하고 x-search-truncate(100)자에서 잘라 쓴다.
+      schema:
+        type: string
+        maxLength: 1000
+        default: ""
+        example: "시험"
+    QueryPage:
+      name: page
+      in: query
+      required: false
+      description: 쪽 번호. 1부터 시작하며 한 쪽은 x-page-size(20)건이다.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 10000
+        default: 1
+  responses:
+    InternalError:
+      description: >-
+        UNAVAILABLE(상태 500). 원인은 예상하지 못한 서버 오류이다. 상세는 응답에 없고 로그에만 남는다.
+        사용자는 잠시 뒤 다시 시도하고 계속되면 IT 지원에 문의하며, 화면은 실패한 영역 안 안내만 보인다.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            internal:
+              value:
+                code: UNAVAILABLE
+                message: "처리하지 못했습니다. 다시 시도해 주세요. 계속되면 IT 지원(내선 <IT 지원 내선>)에 문의하세요"
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    SessionExpired:
+      description: >-
+        SESSION_EXPIRED. 원인은 세션 쿠키가 없거나 서버에서 만료·삭제된 것이다(로그인 유지 시간 8시간 경과 포함).
+        처리는 하지 않았다. 사용자는 로그인 화면으로 가서 다시 로그인한 뒤 직접 다시 누른다.
+        서버는 열람 요청과 대여·반납 요청을 구분하지 않으며 화면이 어느 요청이 거절됐는지로 안내 문구를 고른다.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            expired:
+              value:
+                code: SESSION_EXPIRED
+                message: "로그인 유지 시간이 지났거나 로그인하지 않았습니다. 다시 로그인해 주세요."
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    Forbidden:
+      description: >-
+        FORBIDDEN. 원인은 남의 자원이거나 없는 자원이거나 경로 id 형식이 틀린 것이다(존재 여부를 알리지 않는다).
+        화면은 접근할 수 없음 화면(SCR-08)을 보인다. 사용자는 도서 검색으로 돌아간다.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            forbidden:
+              value:
+                code: FORBIDDEN
+                message: "접근할 수 없습니다"
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    CsrfRejected:
+      description: >-
+        CSRF_REJECTED. 원인은 X-CSRF-Token 머리말이 없거나 __Host-csrf 쿠키와 맞지 않거나 Origin 이 허용된 출처와 다른 것이다.
+        머리말은 명세 검증에서 필수가 아니므로 없는 경우도 400 이 아니라 이 403 이며, 세션 확인 뒤에 검사한다(tech-spec 11.6).
+        처리는 하지 않았다. 사용자는 화면을 새로 고친 뒤 다시 시도한다(화면이 토큰을 새로 받고 자동 재시도는 하지 않는다).
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            csrfRejected:
+              value:
+                code: CSRF_REJECTED
+                message: "요청을 확인하지 못했습니다. 화면을 새로 고친 뒤 다시 시도해 주세요."
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    BookNotFound:
+      description: >-
+        BOOK_NOT_FOUND. 원인은 도서가 없거나 bookId 형식·범위가 틀린 것이다. 화면은 찾을 수 없음 화면(SCR-06)을 같은 주소에서 보인다.
+        사용자는 도서 검색으로 돌아간다.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            notFound:
+              value:
+                code: BOOK_NOT_FOUND
+                message: "도서를 찾을 수 없습니다"
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+            overMaxId:
+              summary: bookId 9223372036854775808(최대값 + 1)은 400 이 아니라 404
+              value:
+                code: BOOK_NOT_FOUND
+                message: "도서를 찾을 수 없습니다"
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+    RouteNotFound:
+      description: >-
+        ROUTE_NOT_FOUND. 원인은 /api 아래에 없는 경로이거나 그 경로에 맞지 않는 메서드이다. 405 나 Allow 머리말 없이 항상 이 404 이다.
+        어느 operation 에도 붙이지 않는 공통 응답이며 서버가 모든 /api 요청에 일반 규칙으로 적용한다.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Request-Id:
+          $ref: "#/components/headers/XRequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            routeNotFound:
+              value:
+                code: ROUTE_NOT_FOUND
+                message: "요청한 주소를 찾을 수 없습니다."
+                details: []
+                trace_id: "4f1c2a9e0b7d4e6f8a3b5c7d9e1f2a3b"
+  schemas:
+    BookIdValue:
+      type: string
+      description: >-
+        도서 id 를 글자로 쓴 값. 경로 매개변수 bookId 와 응답의 bookId 가 모두 이 한 정의를 쓴다.
+        1 이상 9223372036854775807 이하이고 앞에 0 이 없다. 최대값 9223372036854775807 은 getBook 200 이 될 수 있고
+        9223372036854775808 부터는 404 BOOK_NOT_FOUND 이다.
+      pattern: '^([1-9][0-9]{0,17}|[1-8][0-9]{18}|9[01][0-9]{17}|92[01][0-9]{16}|922[0-2][0-9]{15}|9223[0-2][0-9]{14}|92233[0-6][0-9]{13}|922337[01][0-9]{12}|92233720[0-2][0-9]{10}|922337203[0-5][0-9]{9}|9223372036[0-7][0-9]{8}|92233720368[0-4][0-9]{7}|922337203685[0-3][0-9]{6}|9223372036854[0-6][0-9]{5}|92233720368547[0-6][0-9]{4}|922337203685477[0-4][0-9]{3}|9223372036854775[0-7][0-9]{2}|922337203685477580[0-7])$'
+      example: "101"
+    ErrorResponse:
+      type: object
+      description: >-
+        모든 /api 오류가 쓰는 하나의 모양이다. 코드가 정본이고 상태 코드는 일반 규칙이다.
+        코드와 상태 — OVERDUE_BLOCKED·NO_COPY_AVAILABLE·ALREADY_RETURNED·REQUEST_ID_CONFLICT 는 409,
+        BOOK_NOT_FOUND·ROUTE_NOT_FOUND 는 404, FORBIDDEN·CSRF_REJECTED 는 403, AUTH_FAILED·SESSION_EXPIRED 는 401,
+        VALIDATION_FAILED 는 400, UNAVAILABLE 은 503(예상 못한 오류는 500), AUTH_UNAVAILABLE 은 504.
+        message 의 정본은 문서 최상위 x-error-messages 와 x-unavailable-messages 이다.
+        스택·SQL·서버 경로·토큰·다른 사람의 정보는 어떤 응답에도 담지 않는다.
+      required: [code, message, details, trace_id]
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum:
+            - OVERDUE_BLOCKED
+            - NO_COPY_AVAILABLE
+            - BOOK_NOT_FOUND
+            - FORBIDDEN
+            - ALREADY_RETURNED
+            - REQUEST_ID_CONFLICT
+            - UNAVAILABLE
+            - AUTH_FAILED
+            - AUTH_UNAVAILABLE
+            - VALIDATION_FAILED
+            - SESSION_EXPIRED
+            - CSRF_REJECTED
+            - ROUTE_NOT_FOUND
+        message:
+          type: string
+          description: >-
+            사용자에게 보이는 문구(무엇이 잘못됐는지 + 다음에 할 일). 예시/정본 문구의 <IT 지원 내선> 은 서버가
+            IT_SUPPORT_EXT 값으로 치환한 뒤 응답한다. 시험 설정값은 자리표시자 02-0000-0001 이다.
+        details:
+          type: array
+          description: 항상 배열이다(없으면 빈 배열). 보낸 값은 담지 않는다.
+          items:
+            $ref: "#/components/schemas/ErrorDetail"
+        trace_id:
+          type: string
+          pattern: "^[0-9a-f]{32}$"
+          description: 요청 id(32자리 16진수). 응답 머리말 X-Request-Id 와 같다. 같은 값으로 로그를 찾는다.
+    ErrorDetail:
+      type: object
+      required: [field, rule]
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+          maxLength: 100
+          pattern: '^([A-Za-z][A-Za-z0-9]{0,63}|\(body\)|\(query\))$'
+          description: >-
+            어긴 칸의 이름. 명세에 있는 필드 이름(예 account, password, requestId, q, page)이거나,
+            알 수 없는 키·본문 전체 문제일 때는 고정 표지 (body)(본문) 또는 (query)(쿼리)만 쓴다.
+            호출자가 보낸 키 이름은 담지 않는다.
+        rule:
+          type: string
+          enum: [required, minLength, maxLength, minimum, maximum, pattern, format, enum, additionalProperties, type]
+          description: 어긴 규칙 이름. 위 목록으로 닫혀 있다. type 은 값의 자료형이 틀린 경우(예 account 에 숫자)이다.
+    PublicConfig:
+      type: object
+      required: [itSupportExt]
+      additionalProperties: false
+      properties:
+        itSupportExt:
+          type: string
+          description: IT 지원 내선(환경변수 IT_SUPPORT_EXT). 로그인 화면의 안내 문구에 들어간다.
+    CsrfTokenResponse:
+      type: object
+      required: [csrfToken]
+      additionalProperties: false
+      properties:
+        csrfToken:
+          type: string
+          minLength: 1
+          description: 변경 요청의 X-CSRF-Token 머리말에 되돌려 보낼 토큰
+    LoginRequest:
+      type: object
+      required: [account, password]
+      additionalProperties: false
+      properties:
+        account:
+          type: string
+          minLength: 1
+          maxLength: 254
+          pattern: '\S'
+          description: >-
+            회사 계정(사번 또는 메일). 공백이 아닌 글자가 하나 이상 있어야 한다. 서버는 저장하지 않는다.
+            누락=required, 빈 문자열=minLength, 공백만=pattern, 254자 초과=maxLength 를 낸다.
+          example: "user1@example.com"
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 1024
+          description: >-
+            비밀번호. 저장·로그 금지이고 응답에 되돌려 보내지 않는다. 누락=required, 빈 문자열=minLength, 1024자 초과=maxLength 를 낸다.
+            비밀번호는 공백도 글자이므로 공백만 있는 값은 유효하다(거절하지 않는다. pattern 제한 없음).
+          example: "<PASSWORD>"
+    SessionInfo:
+      type: object
+      required: [employeeId]
+      additionalProperties: false
+      properties:
+        employeeId:
+          type: string
+          format: uuid
+          description: 로그인한 임직원의 id(가명 id). 이름·부서·메일은 담지 않는다.
+    BookListItem:
+      type: object
+      description: 목록 한 줄. BookDetail 이 allOf 로 이어받으므로 additionalProperties 를 막지 않는다(막으면 상세 필드가 거부된다).
+      required: [bookId, title, author, hasCover, availableCount]
+      properties:
+        bookId:
+          $ref: "#/components/schemas/BookIdValue"
+        title:
+          type: string
+          maxLength: 300
+          description: 제목(최대 300자, src/shared/limits.ts, tech-spec A-13)
+        author:
+          type: string
+          maxLength: 200
+          description: 저자(최대 200자)
+        hasCover:
+          type: boolean
+          description: 표지가 있으면 true. false 면 화면은 getBookCover 를 부르지 않고 회색 자리 상자를 보인다.
+        availableCount:
+          type: integer
+          minimum: 0
+          description: >-
+            열린 대여 건이 없는 권의 수. 저장하지 않고 읽을 때 계산한다.
+            불변식: availableCount ≤ 도서의 권 수(상세의 copies 개수)이고, 0 이면 모두 대여 중이다.
+    BookSearchPage:
+      type: object
+      required: [items, hasNext]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          description: 한 쪽의 도서. 최대 x-page-size(20)건.
+          items:
+            $ref: "#/components/schemas/BookListItem"
+        hasNext:
+          type: boolean
+          description: 다음 쪽이 있으면 true
+    BookCopy:
+      type: object
+      required: [copyNo, available]
+      additionalProperties: false
+      properties:
+        copyNo:
+          type: integer
+          minimum: 1
+          description: 권 번호(도서 안의 순번)
+        available:
+          type: boolean
+          description: 열린 대여 건이 없으면 true(대여 가능)
+    BookDetail:
+      description: 목록 항목의 모든 필드에 상세 필드와 hasOverdue 를 더한 모양이다.
+      allOf:
+        - $ref: "#/components/schemas/BookListItem"
+        - type: object
+          required: [publisher, description, copies, hasOverdue]
+          properties:
+            publisher:
+              type: string
+              maxLength: 200
+              nullable: true
+              description: 출판사(최대 200자). 없으면 null
+            description:
+              type: string
+              maxLength: 5000
+              nullable: true
+              description: 소개(최대 5000자). 없으면 null
+            copies:
+              type: array
+              minItems: 1
+              description: 권별 상태. copyNo 오름차순. 도서는 권이 최소 1개이다. availableCount ≤ copies 의 개수이고 0 이면 모두 대여 중이다.
+              items:
+                $ref: "#/components/schemas/BookCopy"
+            hasOverdue:
+              type: boolean
+              description: 요청한 임직원 본인에게 연체 중인 열린 대여 건이 있으면 true. 「대여」 비활성 사유를 화면을 연 시점부터 보이는 데 쓴다.
+    BorrowRequest:
+      type: object
+      required: [requestId]
+      additionalProperties: false
+      properties:
+        requestId:
+          type: string
+          format: uuid
+          description: 화면이 「대여」를 누를 때 만든 요청 식별자. 응답을 못 받았으면 같은 값으로 다시 보내고, 응답을 받으면 다음 누름에서 새 값을 만든다.
+    BorrowResult:
+      type: object
+      required: [loanId, bookTitle, dueOn, replayed]
+      additionalProperties: false
+      properties:
+        loanId:
+          type: string
+          format: uuid
+        bookTitle:
+          type: string
+          maxLength: 300
+        dueOn:
+          type: string
+          format: date
+          description: 반납 예정일(한국 표준시 달력 날짜 YYYY-MM-DD). 대여일 + 14일.
+        replayed:
+          type: boolean
+          description: 같은 requestId 의 재전송에 첫 결과를 돌려준 것이면 true
+    MyLoansItem:
+      type: object
+      required: [loanId, bookTitle, dueOn, overdue]
+      additionalProperties: false
+      properties:
+        loanId:
+          type: string
+          format: uuid
+        bookTitle:
+          type: string
+          maxLength: 300
+        dueOn:
+          type: string
+          format: date
+          description: 반납 예정일(한국 표준시 달력 날짜 YYYY-MM-DD)
+        overdue:
+          type: boolean
+          description: 반납 예정일이 오늘(한국 표준시)보다 앞서면 true. 예정일 당일은 false.
+    MyLoansResult:
+      type: object
+      required: [items, hasOverdue]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: 열린 대여 건. 반납 예정일 오름차순, 같으면 먼저 빌린 순.
+          items:
+            $ref: "#/components/schemas/MyLoansItem"
+        hasOverdue:
+          type: boolean
+          description: items 중 연체가 하나라도 있으면 true
+    ReturnResult:
+      type: object
+      required: [loanId, returnedOn]
+      additionalProperties: false
+      properties:
+        loanId:
+          type: string
+          format: uuid
+        returnedOn:
+          type: string
+          format: date
+          description: 반납일(한국 표준시 달력 날짜 YYYY-MM-DD)
+    HealthStatus:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ok]
