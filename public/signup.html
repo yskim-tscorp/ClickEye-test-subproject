@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>회원 가입</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 26rem; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    label { display: block; margin-top: 1rem; font-weight: 600; }
+    input, button { width: 100%; min-height: 44px; font-size: 1rem; box-sizing: border-box; margin-top: .25rem; padding: 0 .5rem; }
+    input[aria-invalid="true"] { border: 2px solid #b00020; }
+    .hint { color: #444; font-size: .875rem; margin: .25rem 0 0; }
+    .error { color: #b00020; font-size: .875rem; margin: .25rem 0 0; min-height: 1.2em; overflow-wrap: anywhere; }
+    #form-error, #success { margin-top: 1rem; }
+    #success { color: #0b6b2d; font-weight: 600; }
+    button { margin-top: 1.5rem; cursor: pointer; }
+    button[disabled] { cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>회원 가입</h1>
+    <div id="form-error" class="error" role="alert"></div>
+    <div id="success" role="status" tabindex="-1"></div>
+    <form id="signup-form" novalidate>
+      <label for="email">이메일</label>
+      <input id="email" name="email" type="email" autocomplete="email" required aria-describedby="email-error">
+      <div id="email-error" class="error" role="alert"></div>
+
+      <label for="password">비밀번호</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="128" aria-describedby="password-hint password-error">
+      <p id="password-hint" class="hint">8자 이상 128자 이하</p>
+      <div id="password-error" class="error" role="alert"></div>
+
+      <button type="submit" id="submit">가입하기</button>
+    </form>
+  </main>
+  <script src="/signup.js"></script>
+</body>
+</html>
