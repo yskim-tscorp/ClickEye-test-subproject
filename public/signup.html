@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>회원 가입</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 26rem; margin: 2rem auto; padding: 0 1rem; color: #111; }
+  .field { margin-bottom: 1rem; }
+  label { display: block; font-weight: 600; margin-bottom: .25rem; }
+  input { width: 100%; box-sizing: border-box; min-height: 44px; padding: .5rem; font-size: 1rem; border: 1px solid #555; border-radius: 4px; }
+  input[aria-invalid="true"] { border-color: #b00020; }
+  .hint { color: #444; font-size: .875rem; margin: .25rem 0 0; }
+  .error { color: #b00020; font-size: .875rem; margin: .25rem 0 0; }
+  button { min-height: 44px; padding: 0 1.5rem; font-size: 1rem; }
+  #form-error { color: #b00020; margin-bottom: 1rem; }
+  #success:focus { outline: none; }
+</style>
+</head>
+<body>
+<main>
+  <section id="success" tabindex="-1" hidden>
+    <h1>가입이 완료되었습니다</h1>
+    <p>가입해 주셔서 감사합니다. 이제 로그인할 수 있습니다.</p>
+  </section>
+  <form id="form" novalidate>
+    <h1>회원 가입</h1>
+    <div id="form-error" role="alert"></div>
+    <div class="field">
+      <label for="email">이메일</label>
+      <input id="email" name="email" type="email" autocomplete="email" required aria-describedby="email-error">
+      <p id="email-error" class="error"></p>
+    </div>
+    <div class="field">
+      <label for="password">비밀번호</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required aria-describedby="password-hint password-error">
+      <p id="password-hint" class="hint">8자 이상 128자 이하</p>
+      <p id="password-error" class="error"></p>
+    </div>
+    <button type="submit" id="submit">가입하기</button>
+    <span id="status" role="status"></span>
+  </form>
+</main>
+<script>
+  const form = document.getElementById('form');
+  const fields = ['email', 'password'];
+  const submitBtn = document.getElementById('submit');
+  const status = document.getElementById('status');
+  const formError = document.getElementById('form-error');
+
+  function clearErrors() {
+    formError.textContent = '';
+    for (const f of fields) {
+      document.getElementById(f).removeAttribute('aria-invalid');
+      document.getElementById(f + '-error').textContent = '';
+    }
+  }
+
+  function showFieldError(field, message) {
+    document.getElementById(field).setAttribute('aria-invalid', 'true');
+    const el = document.getElementById(field + '-error');
+    el.textContent = '오류: ' + message;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors();
+    submitBtn.disabled = true;
+    status.textContent = ' 가입 중…';
+    try {
+      const res = await fetch('/api/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.email.value, password: form.password.value }),
+      });
+      if (res.status === 201) {
+        form.hidden = true;
+        const ok = document.getElementById('success');
+        ok.hidden = false;
+        ok.focus();
+        return;
+      }
+      const body = await res.json().catch(() => null);
+      const details = body && Array.isArray(body.details) ? body.details.filter((d) => fields.includes(d.field)) : [];
+      if (details.length) {
+        for (const d of details) showFieldError(d.field, d.message);
+        document.getElementById(details[0].field).focus();
+      } else {
+        formError.textContent = '가입하지 못했습니다. 잠시 후 다시 시도하세요.';
+      }
+    } catch {
+      formError.textContent = '가입하지 못했습니다. 네트워크를 확인하고 다시 시도하세요.';
+    } finally {
+      submitBtn.disabled = false;
+      status.textContent = '';
+    }
+  });
+</script>
+</body>
+</html>
